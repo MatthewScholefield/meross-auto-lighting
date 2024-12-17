@@ -114,6 +114,7 @@ class LightManager:
         self.http_api_client: Optional[MerossHttpClient] = None
         self.manager: Optional[MerossManager] = None
         self.devices: List[LightDeviceType] = []
+        self.is_old_hardware: List[bool] = []
         self.current_colors: List[Optional[Union[RgbColor, WhiteColor]]] = []
 
     async def __aenter__(self):
@@ -132,6 +133,10 @@ class LightManager:
         logger.info('Found the following devices:', [dev.name for dev in self.devices])
         for dev in self.devices:
             await dev.async_update()
+        self.is_old_hardware = [
+            tuple(int(x) for x in dev.hardware_version.split('.')) < (3, 0, 0)
+            for dev in self.devices
+        ]
         self.current_colors = [None] * len(self.devices)
         return self
 
@@ -160,8 +165,12 @@ class LightManager:
                 args['temperature'] = color.temperature
             else:
                 assert False
-            logger.debug('Support: {}', self.devices[i].get_supports_rgb())
-            await self.devices[i].async_set_light_color(channel=2, onoff=True, **args)
+            if self.is_old_hardware[i]:
+                # Due to strange bug, we need to set a luminance color before an RGB one
+                await self.devices[i].async_set_light_color(
+                    luminance=100, temperature=50
+                )
+            await self.devices[i].async_set_light_color(onoff=True, **args)
             self.current_colors[i] = color
 
     async def turn_off(self):
