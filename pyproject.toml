@@ -12,12 +12,13 @@ dependencies = [
     "loguru>=0.7.3",
 ]
 readme = "README.md"
-requires-python = ">= 3.10"
+requires-python = ">= 3.9"
 license = { text = "MIT" }
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -35,16 +36,13 @@ build-backend = "hatchling.build"
 
 [tool.rye]
 managed = true
-dev-dependencies = [
-    "pre-commit>=4.0.1",
-    "pytest>=8.3.4",
-]
+dev-dependencies = ["pre-commit>=4.0.1", "pytest>=8.3.4"]
 
 [tool.hatch.build.targets.wheel]
 include = ["meross_auto_lighting.py"]
 
 [tool.ruff]
-target-version = "py310"
+target-version = "py39"
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*" = ["PLR2004", "S101", "S106"]

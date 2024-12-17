@@ -1,10 +1,10 @@
 import asyncio
-from enum import StrEnum
+from enum import Enum
 from meross_iot.device_factory import BaseDevice
 import yaml
 
 from datetime import datetime, time
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Union
 from meross_iot.http_api import MerossHttpClient
 from meross_iot.manager import MerossManager
 from meross_iot.controller.mixins.light import LightMixin
@@ -34,7 +34,7 @@ class LightStateConfig(BaseModel):
     name: str
     start: time
     end: time
-    lights: List[RgbColor | WhiteColor]
+    lights: List[Union[RgbColor, WhiteColor]]
 
 
 class AppConfig(BaseModel):
@@ -58,7 +58,7 @@ class AppConfig(BaseModel):
         raise RuntimeError('No state in config matches current time!')
 
 
-class DeviceState(StrEnum):
+class DeviceState(str, Enum):
     ONLINE = 'online'
     RECENT_OFFLINE = 'recent_offline'
     OFFLINE = 'offline'
@@ -114,7 +114,7 @@ class LightManager:
         self.http_api_client: Optional[MerossHttpClient] = None
         self.manager: Optional[MerossManager] = None
         self.devices: List[LightDeviceType] = []
-        self.current_colors: List[Optional[RgbColor | WhiteColor]] = []
+        self.current_colors: List[Optional[Union[RgbColor, WhiteColor]]] = []
 
     async def __aenter__(self):
         self.http_api_client = await MerossHttpClient.async_from_user_password(
@@ -141,7 +141,7 @@ class LightManager:
         if self.http_api_client:
             await self.http_api_client.async_logout()
 
-    async def set_light_colors(self, colors: List[RgbColor | WhiteColor]):
+    async def set_light_colors(self, colors: List[Union[RgbColor, WhiteColor]]):
         if self.current_colors == colors:
             return
         for i, color in enumerate(colors):
