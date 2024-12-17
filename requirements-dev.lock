@@ -79,6 +79,7 @@ pydantic-core==2.27.1
     # via pydantic
 pytest==8.3.4
 pyyaml==6.0.2
+    # via meross-auto-lighting
     # via pre-commit
 requests==2.32.3
     # via meross-iot

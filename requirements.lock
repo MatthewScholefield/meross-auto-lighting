@@ -58,6 +58,8 @@ pydantic==2.10.3
     # via meross-auto-lighting
 pydantic-core==2.27.1
     # via pydantic
+pyyaml==6.0.2
+    # via meross-auto-lighting
 requests==2.32.3
     # via meross-iot
 setuptools==75.6.0
