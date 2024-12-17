@@ -53,8 +53,14 @@ class AppConfig(BaseModel):
     def get_current_light_state(self) -> LightStateConfig:
         now = datetime.now().time()
         for config in self.light_states:
-            if config.start <= now < config.end:
-                return config
+            if config.start <= config.end:
+                # Normal case: start is before end
+                if config.start <= now < config.end:
+                    return config
+            else:
+                # Crosses midnight case
+                if now >= config.start or now < config.end:
+                    return config
         raise RuntimeError('No state in config matches current time!')
 
 
