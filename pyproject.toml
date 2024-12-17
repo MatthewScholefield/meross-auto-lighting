@@ -1,7 +1,7 @@
 [project]
 name = "meross-auto-lighting"
 version = "0.1.0"
-description = "DESCRIPTION"
+description = "A smart schedule-based control Meross smart lights"
 authors = [
     { name = "Matthew D. Scholefield", email = "matthew331199@gmail.com" },
 ]
