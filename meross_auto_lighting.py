@@ -139,10 +139,6 @@ class LightManager:
         logger.info('Found the following devices:', [dev.name for dev in self.devices])
         for dev in self.devices:
             await dev.async_update()
-        self.is_old_hardware = [
-            tuple(int(x) for x in dev.hardware_version.split('.')) < (3, 0, 0)
-            for dev in self.devices
-        ]
         self.current_colors = [None] * len(self.devices)
         return self
 
@@ -155,29 +151,32 @@ class LightManager:
     async def set_light_colors(self, colors: List[Union[RgbColor, WhiteColor]]):
         if self.current_colors == colors:
             return
-        for i, color in enumerate(colors):
-            if color.is_off:
-                await self.devices[i].async_turn_off()
-                self.current_colors[i] = None
-                continue
-            logger.info(
-                'Setting light color for device {} to: {}', self.devices[i].name, color
-            )
-            args = {}
-            if isinstance(color, RgbColor):
-                args['rgb'] = color.rgb
-            elif isinstance(color, WhiteColor):
-                args['luminance'] = color.luminance
-                args['temperature'] = color.temperature
-            else:
-                assert False
-            if self.is_old_hardware[i]:
-                # Due to strange bug, we need to set a luminance color before an RGB one
-                await self.devices[i].async_set_light_color(
-                    luminance=100, temperature=50
-                )
-            await self.devices[i].async_set_light_color(onoff=True, **args)
-            self.current_colors[i] = color
+        await asyncio.gather(
+            *[self._set_device_light_color(i, color) for i, color in enumerate(colors)]
+        )
+
+    async def _set_device_light_color(
+        self, index: int, color: Union[RgbColor, WhiteColor]
+    ):
+        if color.is_off:
+            await self.devices[index].async_turn_off()
+            self.current_colors[index] = None
+            return
+        logger.info(
+            'Setting light color for device {} to: {}', self.devices[index].name, color
+        )
+        args = {}
+        if isinstance(color, RgbColor):
+            args['rgb'] = color.rgb
+        elif isinstance(color, WhiteColor):
+            args['luminance'] = color.luminance
+            args['temperature'] = color.temperature
+        else:
+            assert False
+        # Due to strange bug, we need to set a luminance color before an RGB one
+        await self.devices[index].async_set_light_color(luminance=100, temperature=50)
+        await self.devices[index].async_set_light_color(**args)
+        self.current_colors[index] = color
 
     async def turn_off(self):
         logger.info('Turning off lights')
