@@ -33,8 +33,11 @@ class WhiteColor(BaseModel):
 class LightStateConfig(BaseModel):
     name: str
     start: time
-    end: time
     lights: List[Union[RgbColor, WhiteColor]]
+
+
+OFF_COLOR = WhiteColor(luminance=0, temperature=100)
+AWAY_CONFIG = LightStateConfig(name='Away', start=time(0, 0), lights=[OFF_COLOR, OFF_COLOR])
 
 
 class AppConfig(BaseModel):
@@ -52,14 +55,15 @@ class AppConfig(BaseModel):
 
     def get_current_light_state(self) -> LightStateConfig:
         now = datetime.now().time()
-        for config in self.light_states:
-            if config.start <= config.end:
+        for i, config in enumerate(self.light_states):
+            end_time = self.light_states[(i + 1) % len(self.light_states)].start
+            if config.start < end_time:
                 # Normal case: start is before end
-                if config.start <= now < config.end:
+                if config.start <= now < end_time:
                     return config
             else:
                 # Crosses midnight case
-                if now >= config.start or now < config.end:
+                if now >= config.start or now < end_time:
                     return config
         raise RuntimeError('No state in config matches current time!')
 
@@ -168,20 +172,23 @@ class LightManager:
         args = {}
         if isinstance(color, RgbColor):
             args['rgb'] = color.rgb
+            # Due to strange bug, we need to set a luminance color before an RGB one
+            await self.devices[index].async_set_light_color(luminance=100, temperature=50)
         elif isinstance(color, WhiteColor):
+            await self.devices[index].async_set_light_color(rgb=(255,255,255))
             args['luminance'] = color.luminance
             args['temperature'] = color.temperature
         else:
             assert False
-        # Due to strange bug, we need to set a luminance color before an RGB one
-        await self.devices[index].async_set_light_color(luminance=100, temperature=50)
         await self.devices[index].async_set_light_color(**args)
         self.current_colors[index] = color
 
     async def turn_off(self):
         logger.info('Turning off lights')
-        for device in self.devices:
-            await device.async_turn_off()
+        for i, device in enumerate(self.devices):
+            if self.current_colors[i] and not self.current_colors[i].is_off:
+                await device.async_turn_off()
+                self.current_colors[i] = None
 
 
 class LightController:
@@ -193,14 +200,20 @@ class LightController:
         async with LightManager(
             self.config.meross_email, self.config.meross_password
         ) as light_manager:
+            is_away = False
+            last_light_config = None
             while True:
                 current_state, is_new = await self.tracker.check_device_state()
                 if is_new:
                     if current_state == DeviceState.ONLINE:
-                        current_state = self.config.get_current_light_state()
-                        await light_manager.set_light_colors(current_state.lights)
+                        is_away = False
                     elif current_state == DeviceState.OFFLINE:
-                        await light_manager.turn_off()
+                        is_away = True
+                light_config = AWAY_CONFIG if is_away else self.config.get_current_light_state()
+                if last_light_config != light_config:
+                    last_light_config = light_config
+                    logger.info('Setting lights to config: {}', light_config.name)
+                    await light_manager.set_light_colors(light_config.lights)
                 await asyncio.sleep(10)
 
 
