@@ -230,19 +230,32 @@ class RoomThermostat:
 
     def handle_message(self, msg: mqtt.MQTTMessage):
         if msg.topic == self.config.mqtt_read_temperature_topic:
-            self.update_read_temperature(float(msg.payload.decode()))
+            self.update_read_temperature(
+                float(msg.payload.decode()) if msg.payload else None
+            )
         elif msg.topic == self.config.mqtt_read_control_temperature_topic:
-            self.set_control_temperature(float(msg.payload.decode()))
+            self.set_control_temperature(
+                float(msg.payload.decode()) if msg.payload else None, False
+            )
         else:
             return False
         return True
 
-    def set_control_temperature(self, temperature: Optional[float]):
-        self.temperature = temperature
+    def set_control_temperature(self, temperature: Optional[float], publish: bool):
+        self.temperature = temperature or None
         if self.last_temp is not None:
             self.update_read_temperature(self.last_temp)
+        if publish:
+            self.mqtt_client.publish(
+                self.config.mqtt_read_control_temperature_topic,
+                str(temperature) if temperature is not None else '',
+                qos=2,
+                retain=True,
+            )
 
-    def update_read_temperature(self, temperature: float):
+    def update_read_temperature(self, temperature: Optional[float]):
+        if temperature is None:
+            return
         self.last_temp = temperature
         should_turn_on = (
             self.temperature is not None
@@ -334,7 +347,9 @@ class MqttLightController:
                     last_light_config = light_config
                     logger.info('Setting lights to config: {}', light_config.name)
                     await light_manager.set_light_colors(light_config.lights)
-                    self.thermostat.set_temperature(light_config.temperature)
+                    self.thermostat.set_control_temperature(
+                        light_config.temperature, True
+                    )
                     self.publish_current_state(light_config.name)
                 with suppress(asyncio.TimeoutError):
                     await asyncio.wait_for(self.change_event, timeout=10)
