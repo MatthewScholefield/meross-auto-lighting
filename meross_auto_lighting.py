@@ -18,6 +18,7 @@ from meross_iot.manager import MerossManager
 from meross_iot.controller.mixins.light import LightMixin
 from aiologic.lowlevel import AsyncEvent
 
+
 class RgbColor(BaseModel):
     rgb: Tuple[int, int, int]
 
@@ -39,22 +40,28 @@ class LightStateConfig(BaseModel):
     name: str
     start: time
     lights: List[Union[RgbColor, WhiteColor]]
+    temperature: Optional[float] = None
 
 
 OFF_COLOR = WhiteColor(luminance=0, temperature=100)
-AWAY_CONFIG = LightStateConfig(name='Away', start=time(0, 0), lights=[OFF_COLOR, OFF_COLOR])
+AWAY_CONFIG = LightStateConfig(
+    name='Away', start=time(0, 0), lights=[OFF_COLOR, OFF_COLOR]
+)
 
 
 class AppConfig(BaseModel):
     meross_email: str
     meross_password: str
     user_ips: List[str]
-    presence_timeout: int = 1800
+    presence_timeout: int = 5 * 60
     light_states: List[LightStateConfig]
     mqtt_host: str
     mqtt_port: int = 1883
     mqtt_topic: str
     mqtt_publish_topic: str
+    mqtt_read_temperature_topic: str
+    mqtt_read_control_temperature_topic: str
+    mqtt_heater_control_topic: str
     mqtt_user: str
     mqtt_password_file: Path
 
@@ -109,7 +116,9 @@ class DeviceTracker:
         return current_state, is_new
 
     async def _get_current_state(self) -> DeviceState:
-        device_statuses = await asyncio.gather(*[self._is_device_up(ip) for ip in self.ips])
+        device_statuses = await asyncio.gather(
+            *[self._is_device_up(ip) for ip in self.ips]
+        )
         if any(device_statuses):
             return DeviceState.ONLINE
         if (
@@ -122,8 +131,14 @@ class DeviceTracker:
 
     async def _is_device_up(self, ip: str) -> bool:
         process = await asyncio.create_subprocess_exec(
-            'ping', '-c', '1', '-W', '0.5', ip,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            'ping',
+            '-c',
+            '1',
+            '-W',
+            '0.5',
+            ip,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
         stdout, stderr = await process.communicate()
         return process.returncode == 0
@@ -144,7 +159,9 @@ class LightManager:
 
     async def __aenter__(self):
         self.http_api_client = await MerossHttpClient.async_from_user_password(
-            email=self.email, password=self.password, api_base_url='https://iot.meross.com',
+            email=self.email,
+            password=self.password,
+            api_base_url='https://iot.meross.com',
         )
         self.manager = MerossManager(http_client=self.http_api_client)
         await self.manager.async_init()
@@ -170,7 +187,9 @@ class LightManager:
             *[self._set_device_light_color(i, color) for i, color in enumerate(colors)]
         )
 
-    async def _set_device_light_color(self, index: int, color: Union[RgbColor, WhiteColor]):
+    async def _set_device_light_color(
+        self, index: int, color: Union[RgbColor, WhiteColor]
+    ):
         if color.is_off:
             await self.devices[index].async_turn_off()
             self.current_colors[index] = None
@@ -178,7 +197,9 @@ class LightManager:
         args = {}
         if isinstance(color, RgbColor):
             args['rgb'] = color.rgb
-            await self.devices[index].async_set_light_color(luminance=100, temperature=50)
+            await self.devices[index].async_set_light_color(
+                luminance=100, temperature=50
+            )
         elif isinstance(color, WhiteColor):
             args['luminance'] = color.luminance
             args['temperature'] = color.temperature
@@ -189,6 +210,61 @@ class LightManager:
 LightOverride = namedtuple('LightOverride', 'base_index offset')
 
 
+class RoomThermostat:
+    TEMP_RANGE = 0.5
+
+    def __init__(self, config: AppConfig, mqtt_client: mqtt.Client):
+        self.config = config
+        self.mqtt_client = mqtt_client
+        self.temperature: Optional[float] = None
+        self.is_on = False
+        self.temp_range = 1.0
+        self.last_temp: Optional[float] = None
+
+    def on_connect(self, client: mqtt.Client):
+        client.subscribe(self.config.mqtt_read_temperature_topic)
+        client.subscribe(self.config.mqtt_read_control_temperature_topic)
+        client.publish(
+            self.config.mqtt_heater_control_topic, str(0), qos=2, retain=True
+        )
+
+    def handle_message(self, msg: mqtt.MQTTMessage):
+        if msg.topic == self.config.mqtt_read_temperature_topic:
+            self.update_read_temperature(float(msg.payload.decode()))
+        elif msg.topic == self.config.mqtt_read_control_temperature_topic:
+            self.set_control_temperature(float(msg.payload.decode()))
+        else:
+            return False
+        return True
+
+    def set_control_temperature(self, temperature: Optional[float]):
+        self.temperature = temperature
+        if self.last_temp is not None:
+            self.update_read_temperature(self.last_temp)
+
+    def update_read_temperature(self, temperature: float):
+        self.last_temp = temperature
+        should_turn_on = (
+            self.temperature is not None
+            and temperature < self.temperature - self.TEMP_RANGE / 2
+        )
+        should_turn_off = (
+            self.temperature is None
+            or temperature > self.temperature + self.TEMP_RANGE / 2
+        )
+
+        if should_turn_on and not self.is_on:
+            self._set_heater_state(True)
+        elif should_turn_off and self.is_on:
+            self._set_heater_state(False)
+
+    def _set_heater_state(self, state: bool):
+        self.is_on = state
+        self.mqtt_client.publish(
+            self.config.mqtt_heater_control_topic, str(int(state)), qos=2, retain=True
+        )
+
+
 class MqttLightController:
     def __init__(self, config: AppConfig):
         self.config = config
@@ -197,24 +273,36 @@ class MqttLightController:
         self.mqtt_client.on_message = self.on_message
         self.override: Optional[LightOverride] = None
         self.change_event: Optional[AsyncEvent] = None
+        self.thermostat = RoomThermostat(config, self.mqtt_client)
 
     def on_connect(self, client, userdata, flags, rc):
         logger.info('Connected to MQTT broker.')
         client.subscribe(self.config.mqtt_topic)
+        self.thermostat.on_connect(client)
 
-    def on_message(self, client, userdata, msg):
+    def on_message(self, client, userdata, msg: mqtt.MQTTMessage):
+        assert self.change_event
+        if self.thermostat.handle_message(msg):
+            return
+        assert msg.topic == self.config.mqtt_topic
         try:
             value = int(msg.payload.decode())
-            self.override = LightOverride(self.config.get_current_state_index(), value) if value else None
+            self.override = (
+                LightOverride(self.config.get_current_state_index(), value)
+                if value
+                else None
+            )
             self.change_event.set()
         except ValueError:
-            logger.warning("Invalid MQTT message: {}", msg.payload)
+            logger.warning('Invalid MQTT message: {}', msg.payload)
 
     def publish_current_state(self, config_name: str):
         self.mqtt_client.publish(self.config.mqtt_publish_topic, config_name)
 
     def start(self):
-        self.mqtt_client.username_pw_set(self.config.mqtt_user, self.config.mqtt_password_file.read_text().strip())
+        self.mqtt_client.username_pw_set(
+            self.config.mqtt_user, self.config.mqtt_password_file.read_text().strip()
+        )
         self.mqtt_client.connect(self.config.mqtt_host, self.config.mqtt_port)
         threading.Thread(target=self.mqtt_client.loop_forever, daemon=True).start()
 
@@ -222,22 +310,31 @@ class MqttLightController:
         self.change_event = AsyncEvent()
         self.start()
         device = DeviceTracker(self.config.user_ips, self.config.presence_timeout)
-        async with LightManager(self.config.meross_email, self.config.meross_password) as light_manager:
+        async with LightManager(
+            self.config.meross_email, self.config.meross_password
+        ) as light_manager:
             last_light_config = None
             while True:
                 index = self.config.get_current_state_index()
                 if self.override:
                     if index != self.override.base_index:
                         self.override = None
-                        self.mqtt_client.publish(self.config.mqtt_topic, str(0), retain=True)
+                        self.mqtt_client.publish(
+                            self.config.mqtt_topic, str(0), retain=True
+                        )
                     else:
-                        index = (index + self.override.offset) % len(self.config.light_states)
+                        index = (index + self.override.offset) % len(
+                            self.config.light_states
+                        )
                 is_present = await device.is_device_present()
-                light_config = self.config.light_states[index] if is_present else AWAY_CONFIG
+                light_config = (
+                    self.config.light_states[index] if is_present else AWAY_CONFIG
+                )
                 if last_light_config != light_config:
                     last_light_config = light_config
                     logger.info('Setting lights to config: {}', light_config.name)
                     await light_manager.set_light_colors(light_config.lights)
+                    self.thermostat.set_temperature(light_config.temperature)
                     self.publish_current_state(light_config.name)
                 with suppress(asyncio.TimeoutError):
                     await asyncio.wait_for(self.change_event, timeout=10)

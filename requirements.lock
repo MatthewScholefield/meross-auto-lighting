@@ -16,6 +16,8 @@ aiohappyeyeballs==2.4.4
     # via aiohttp
 aiohttp==3.11.10
     # via meross-iot
+aiologic==0.13.0
+    # via meross-auto-lighting
 aiosignal==1.3.2
     # via aiohttp
 annotated-types==0.7.0

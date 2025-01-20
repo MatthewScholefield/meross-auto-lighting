@@ -1,5 +1,7 @@
 # Meross Auto Lighting
 
+*A smart schedule-based control Meross smart lights*
+
 This script automatically controls Meross lights based on a lighting schedules and IP based presence detection.
 
 ## Features
